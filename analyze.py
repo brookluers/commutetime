@@ -16,12 +16,17 @@ def getknockoffs_dask(Xmat, u, d, vT, svec):
     # da.dot(cU * cD, cVt) == CtC
     cDsqrt = da.sqrt(cD)
     Cmat = da.dot(cU * cDsqrt, cVt)
+    ###
     zeroes_NxP = da.broadcast_to([0], Xmat.shape, Xmat.chunks)
     X_zeroes = da.concatenate((Xmat,zeroes_NxP),
                         axis=1).rechunk({0:'auto',1:-1})
     Q, R = da.linalg.qr(X_zeroes)
     Utilde = Q[:, -pdim:]
-    #return(X - X %*% Sigma_inv_S + Utilde %*% Cmat)
+    ## Version using projection matrix based on SVD
+    #Zrand = da.random.random(Xmat.shape,chunks=Xmat.chunks)
+    #Utilde, Rz = da.linalg.qr(Zrand - da.matmul(da.matmul(u, u.T), Zrand))
+    #######
+    #(X - X %*% Sigma_inv_S + Utilde %*% Cmat)
     Xtilde = Xmat - da.matmul(Xmat, Sigma_inv_S) + da.matmul(Utilde, Cmat)
     return Xtilde
 
