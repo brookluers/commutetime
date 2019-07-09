@@ -3,26 +3,13 @@ import pandas as pd
 import tables
 from patsy import dmatrix
 from patsy.contrasts import Treatment
+import json
 
 def getfilter(chunk):
     # worked last week, not from home
     yesworked = chunk['WRKLSTWK'] == 2
     noworkhome = chunk['TRANWORK'] != 70 # did not work from home
     return yesworked & noworkhome
-
-
-def derivevars(chunk):
-    chunk = chunk.assign(INCTOT99 = lambda xi: xi['INCTOT'] * xi['CPI99'])
-    # groupby a category variable returns all empty combinations
-    # instead group by integer
-    chunk = chunk.assign(AGECAT = pd.cut(chunk['AGE'], agegroups,
-                    right=False,
-                    labels = False)) # uses integers as labels
-    chunk = chunk.assign(OCC10GP = pd.cut(chunk['OCC2010'],
-                          occ10groups, right=False,
-                          labels = False))
-    return chunk
-
 
 dtypes = {
     'YEAR': 'uint16',
@@ -39,6 +26,7 @@ dtypes = {
     'RACE': 'uint8',
     'BEDROOMS': 'uint8',
     'OCC2010': 'uint16',
+    # 'HCOVPRIV': 'float16',
     #'METRO': 'float16', # metropolitan status of household
     'NCHILD': 'uint8'
     # 'DEPARTS': 'float16'
@@ -84,27 +72,64 @@ agelabels = ['16 - 24', '25 - 34', '35 - 44', '45 - 54', '55  64', '65 or older'
 
 flevels = {
     'SEX': [1,2],
-    'AGECAT': np.arange(len(agelabels)),
-    'OCC10GP': np.arange(len(occ10labels)),
-    'NCHILD': np.arange(10),
-    'EDUC': np.arange(12),
-    'TRANWORK': [0, 10, 11, 12, 13, 14, 20, 30, 31,
+    'AGECAT': [i for i in range(len(agelabels))],
+    'OCC10GP': [i for i in range(len(occ10labels))],
+    'NCHILD': [i for i in range(10)],
+    'EDUC': [i for i in range(12)],
+    'TRANWORK': [0, 10, 11, 12, 13, 14, 15, 20, 30, 31,
                 32, 33, 34, 35, 36, 40, 50, 60],
     'MARST': [1,2,3,4,5,6],
     'RACE': [1,2,3,4,5,6,7,8,9],
-    'BEDROOMS': np.arange(23)
+    #'HCOVPRIV': [1,2],
+    'BEDCAT': [i for i in range(7)]
+}
+
+flabels = {
+    'SEX': ['Male','Female'],
+    'AGECAT': agelabels,
+    'OCC10GP' : occ10labels,
+    'NCHILD' : ['0','1','2','3','4','5','6','7','8','9 or more'],
+    'EDUC': ['N/A or no schooling', 'Nursery school to grade 4',
+             'Grade 5, 6, 7, or 8', 'Grade 9','Grade 10', 'Grade 11',
+             'Grade 12','1 year of college','2 years of college',
+             '3 years of college', '4 years of college', '5+ years of college'],
+    'TRANWORK': ['N/A', 'Auto, truck, or van','Auto','Driver',
+                 'Passenger', 'Truck', 'Van', 'Motorcycle','Bus or streetcar',
+                 'Bus or trolley bus','Streetcar or trolley car',
+                 'Subway or elevated', 'Railroad',
+                 'Taxicab','Ferryboat','Bicycle', 'Walked only','Other'],
+    'MARST': ['Married, spouse present', 'Married, spouse absent',
+              'Separated', 'Divorced', 'Widowed', 'Never married/single'],
+    'RACE' : ['White', 'Black/African American/Negro',
+               'American Indian or Alaska Native', 'Chinese',
+               'Japanese', 'Other Asian or Pacific Islander',
+               'Other race', 'Two major races', 'Three or more major races'],
+    #'HCOVPRIV': ['Without private health insurance',
+    #            'With private health insurance'],
+    'BEDCAT': ['N/A/', 'No bedrooms','1','2','3','4','5 or more']
 }
 
 olsformula = "0 + YEAR + C(SEX, levels = flevels['SEX'])\
-* C(AGECAT, Treatment, levels=flevels['AGECAT'])\
-* C(RACE, Treatment, levels=flevels['RACE'])\
-* C(MARST, Treatment, levels=flevels['MARST'])\
-+ C(BEDROOMS, Treatment, levels=flevels['BEDROOMS'])\
++ C(AGECAT, Treatment, levels=flevels['AGECAT'])\
++ C(RACE, Treatment, levels=flevels['RACE'])\
++ C(MARST, Treatment, levels=flevels['MARST'])\
++ C(BEDCAT, Treatment, levels=flevels['BEDCAT'])\
 + C(NCHILD, Treatment, levels=flevels['NCHILD'])\
-*C(EDUC, Treatment, levels=flevels['EDUC'])\
-*C(OCC10GP, Treatment, levels=flevels['OCC10GP'])\
++ C(EDUC, Treatment, levels=flevels['EDUC'])\
++ C(OCC10GP, Treatment, levels=flevels['OCC10GP'])\
  + C(TRANWORK, Treatment, levels=flevels['TRANWORK'])\
   + INCTOT99"
+
+
+derivevars = {
+    'INCTOT99' : lambda xi: xi['INCTOT'] * xi['CPI99'],
+    'AGECAT' : lambda xi:  pd.cut(xi['AGE'], agegroups,
+                                  right = False, labels=False),
+    'OCC10GP': lambda xi: pd.cut(xi['OCC2010'], occ10groups,
+                                 right = False, labels = False),
+    'BEDCAT' : lambda xi: xi['BEDROOMS'].where(xi['BEDROOMS'] < 6, 6)
+}
+
 
 h5fname = 'regression-data.h5'
 h5file = tables.open_file(h5fname, mode='w')
@@ -113,7 +138,7 @@ fatom = tables.Float64Atom()
 csvfname = '~/Downloads/usa_00008.csv'
 temp = pd.read_csv(csvfname, usecols=list(dtypes.keys()),
                     dtype = dtypes, nrows = 200)
-pdim = dmatrix(olsformula, derivevars(temp[getfilter(temp)])).shape[1]
+pdim = dmatrix(olsformula, temp[getfilter(temp)].assign(**derivevars)).shape[1]
 Xarray = h5file.create_earray(h5file.root, 'X', fatom,
                               shape = (0,pdim),
                               filters = tables.Filters(complevel=1, complib='zlib'),
@@ -131,9 +156,7 @@ Warray = h5file.create_earray(h5file.root, 'wgt', fatom,
 
 
 wgtvar = 'PERWT'
-gpvars = ['YEAR','EDUC','TRANWORK', 'SEX',
-            'RACE', 'AGECAT', 'BEDROOMS',
-            'OCC10GP', 'MARST', 'NCHILD']
+gpvars = list(flevels.keys()) + ['YEAR']
 Yvar = 'TRANTIME'
 measvars = ['INCTOT99', 'TRANTIME']
 gpdatlist = []
@@ -143,13 +166,13 @@ nkept = 0
 for chunk in pd.read_csv(csvfname,
                             usecols = list(dtypes.keys()),
                             dtype = dtypes,
-                            nrows = 100000,
-                            chunksize = 50000):
+                            nrows = 90000,
+                            chunksize = 20000):
     nrows += len(chunk.index)
     print("{:d} rows so far...".format(nrows))
     curfilter = getfilter(chunk)
     nkept += sum(curfilter)
-    chunk = derivevars(chunk[curfilter])
+    chunk = chunk[curfilter].assign(**derivevars)
     xmat = dmatrix(olsformula, chunk)
     Xarray.append(xmat)
     Yarray.append(chunk[Yvar].values)
@@ -163,10 +186,15 @@ for chunk in pd.read_csv(csvfname,
 gpdat = pd.concat(gpdatlist)
 # eliminate duplicate groupby combinations due to chunking
 gpdat = gpdat.groupby(gpvars, as_index=False).aggregate(np.sum)
-gpdat['AGECAT'] = [agelabels[i] for i in gpdat['AGECAT']]
-gpdat['OCC10GP'] = [occ10labels[i] for i in gpdat['OCC10GP']]
-#print(gpdat)
+
+# label the integer-valued grouping variables
+for k in flevels.keys():
+    gpdat[k] = [flabels[k][flevels[k].index(i)] for i in gpdat[k]]
+
 gpdat.info()
+with open("factors.json", "w") as jf:
+    jf.write(json.dumps(flevels))
+    jf.write(json.dumps(flabels))
 print("\nRead {:d} rows, discarded {:d} where WRKLSTWK != 2 or worked from home \n".format(nrows, nrows - nkept))
 gpdat.to_csv("gpsummary.csv", index=False)
 
