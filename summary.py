@@ -155,7 +155,7 @@ wgtvar = 'PERWT'
 gpvars = list(flevels.keys()) + ['YEAR']
 Yvar = 'TRANTIME'
 Y_navalue = 0
-Yhistbins = list(np.arange(0,300,2.5)) + [600]
+Yhistbins = list(np.arange(0,300,5)) + [600]
 Yhist_gpvars = ['TRANWORK', 'YEAR']
 Yhist_temp = []
 measvars = ['INCTOT99', 'TRANTIME']
@@ -169,9 +169,21 @@ fatom = tables.Float64Atom()
 csvfname = '~/Downloads/usa_00008.csv'
 temp = pd.read_csv(csvfname, usecols=list(dtypes.keys()),
                     dtype = dtypes, nrows = 200)
+tempdesign = dmatrix(olsformula,
+                temp[getfilter(temp, Yvar, Y_navalue)].assign(**derivevars))
+pdim = tempdesign.shape[1]
+with open("xcolnames.json", "w") as xj:
+    xj.write(json.dumps(tempdesign.design_info.column_name_indexes))
 
-pdim = dmatrix(olsformula,
-                temp[getfilter(temp, Yvar, Y_navalue)].assign(**derivevars)).shape[1]
+tnameslices = tempdesign.design_info.term_name_slices
+tnamedict = {}
+xindices = list(range(pdim))
+for tn in tnameslices:
+    tnamedict[tn]  = xindices[tnameslices[tn]]
+
+with open("xtermslices.json", "w") as xj:
+    xj.write(json.dumps(tnamedict))
+
 Xarray = h5file.create_earray(h5file.root, 'X', fatom,
                               shape = (0,pdim),
                               filters = tables.Filters(complevel=1, complib='zlib'),
@@ -197,7 +209,7 @@ def doHist(chunk, Yvar, Yhistbins,
 for chunk in pd.read_csv(csvfname,
                             usecols = list(dtypes.keys()),
                             dtype = dtypes,
-                            nrows = 200000,
+                            nrows = 300000,
                             chunksize = 50000):
     nrows += len(chunk.index)
     print("{:d} rows so far...".format(nrows))

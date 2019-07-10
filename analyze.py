@@ -1,6 +1,7 @@
 import numpy as np
 from dask import array as da
 import tables
+import json
 
 def getknockoffs_dask(Xmat, u, d, vT, svec):
     # X = UDV^t
@@ -30,12 +31,33 @@ def getknockoffs_dask(Xmat, u, d, vT, svec):
     Xtilde = Xmat - da.matmul(Xmat, Sigma_inv_S) + da.matmul(Utilde, Cmat)
     return Xtilde
 
+xinfo = {}
+with open('xcolnames.json') as jf:
+    xinfo['xcolnames'] = json.load(jf)
+
+with open('xtermslices.json') as jf:
+    xinfo['xtermcols'] = json.load(jf)
 
 h5read = tables.open_file('regression-data.h5', mode='r')
 Xmat = da.from_array(h5read.root.X)
 Y = da.from_array(h5read.root.Y)
+Wgt = da.from_array(h5read.root.wgt)
 xnorms = da.linalg.norm(Xmat, axis=0)
+xsums = da.sum(Xmat, axis=0)
+xnorms, xsums = da.compute(xnorms, xsums)
+keepcols = np.arange(Xmat.shape[1])[np.nonzero(xnorms)]
+dropcols = np.arange(Xmat.shape[1])[xnorms==0]
+print("Columns with norm zero, dropped:")
+for colname in xinfo['xcolnames']:
+    for dropix in dropcols:
+        if xinfo['xcolnames'][colname] == dropix:
+            print(colname)
+
+Xmat = Xmat[:, keepcols]
+xnorms = xnorms[keepcols]
+xsums = xsums[keepcols]
 Xmat = Xmat / xnorms
+print("design matrix has dimensions {:d} by {:d}".format(Xmat.shape[0], Xmat.shape[1]))
 svec = np.repeat(0.001, Xmat.shape[1])
 u, d, vT = da.linalg.svd(Xmat)
 Xtilde = getknockoffs_dask(Xmat, u, d, vT, svec)
