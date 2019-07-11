@@ -2,12 +2,10 @@ import numpy as np
 from dask import array as da
 from dask.diagnostics import Profiler, ResourceProfiler, CacheProfiler
 from dask.diagnostics import visualize
-from dask.distributed import Client
 import dask.config
 import tables
 import json
 
-client = Client()
 # dask.config.set({'array.chunk-size': '64MiB'})
 
 def getknockoffs_dask(Xmat, u, d, vT, svec, tol):
