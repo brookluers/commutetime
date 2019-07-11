@@ -1,7 +1,14 @@
 import numpy as np
 from dask import array as da
+from dask.diagnostics import Profiler, ResourceProfiler, CacheProfiler
+from dask.diagnostics import visualize
+from dask.distributed import Client
+import dask.config
 import tables
 import json
+
+client = Client()
+# dask.config.set({'array.chunk-size': '64MiB'})
 
 def getknockoffs_dask(Xmat, u, d, vT, svec, tol):
     # X = UDV^t
@@ -45,6 +52,11 @@ h5write = tables.open_file('knockoff-data.h5', mode='w')
 fatom = tables.Float64Atom()
 filters = tables.Filters(complevel=1, complib='zlib')
 Xmat = da.from_array(h5read.root.X)
+
+### For profiling only
+#Xmat = Xmat[0:1000000,:]
+### 
+
 Y = da.from_array(h5read.root.Y)
 Wgt = da.from_array(h5read.root.wgt)
 xmeans = da.mean(Xmat, axis=0)
@@ -89,6 +101,9 @@ s_store = h5write.create_array(h5write.root, 'knockoff_svec', svec)
 colnames_store = h5write.create_array(h5write.root, 'xcolnames', xcolnames)
 #u_store = h5write.create_carray(h5write.root, 'Xsvd_u', fatom,
 #                                shape = u.shape, filters=filters)
-da.store([Xtilde, Xmat, d], [Xtilde_store, Xmat_store, d_store])
+with Profiler() as prof, ResourceProfiler() as rprof, CacheProfiler() as cprof:
+    da.store([Xtilde, Xmat, d], [Xtilde_store, Xmat_store, d_store])
+
+visualize([prof, rprof, cprof], show=False)
 h5write.close()
 h5read.close()
