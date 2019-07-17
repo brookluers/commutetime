@@ -23,13 +23,22 @@ def getknockoffs_dask(Xmat, u, d, vT, svec, tol):
     cU, cD, cVt = da.linalg.svd(CtC)
     # da.dot(cU * cD, cVt) == CtC
     cDsqrt = da.sqrt(cD)
-    Cmat = da.dot(cU * cDsqrt, cVt)
+    Cmat = da.dot(cU * cDsqrt, cVt)# p by p, memory-friendly
+    # Sigma_inv_S, Cmat = da.compute(Sigma_inv_S, Cmat)
     ###
     zeroes_NxP = da.broadcast_to([0], Xmat.shape, Xmat.chunks)
-    X_zeroes = da.concatenate((Xmat,zeroes_NxP),
+    zeroes_pxp = da.broadcast_to([0], (pdim, pdim), (pdim, pdim))
+    getpcols = da.vstack((zeroes_pxp, da.diag(np.repeat(1.0, pdim))))
+    X_zeroes = da.concatenate((Xmat, zeroes_NxP),
                         axis=1).rechunk({0:'auto',1:-1})
     Q, R = da.linalg.qr(X_zeroes)
+    del v
+    del u
+    del VDi
+    del R
+    del X_zeroes
     Utilde = Q[:, -pdim:]
+    # Utilde = da.matmul(Q, getpcols) # last p column of Q
     ## Version using projection matrix based on SVD
     #Zrand = da.random.random(Xmat.shape,chunks=Xmat.chunks)
     #Utilde, Rz = da.linalg.qr(Zrand - da.matmul(da.matmul(u, u.T), Zrand))
@@ -53,7 +62,7 @@ Xmat = da.from_array(h5read.root.X)
 
 ### For profiling only
 #Xmat = Xmat[0:1000000,:]
-### 
+###
 
 Y = da.from_array(h5read.root.Y)
 Wgt = da.from_array(h5read.root.wgt)
@@ -84,6 +93,7 @@ u, d, vT = da.linalg.svd(Xmat)
 tol = 1e-08
 print("Truncating X singular values at {:e}".format(tol))
 Xtilde = getknockoffs_dask(Xmat, u, d, vT, svec, tol=1e-08)
+Xtilde.visualize(filename='xtilde-vis.svg')
 Xtilde_store = h5write.create_carray(h5write.root, 'Xtilde', fatom,
                                      shape = Xtilde.shape,
                                      filters = filters)
@@ -100,7 +110,9 @@ colnames_store = h5write.create_array(h5write.root, 'xcolnames', xcolnames)
 #u_store = h5write.create_carray(h5write.root, 'Xsvd_u', fatom,
 #                                shape = u.shape, filters=filters)
 with Profiler() as prof, ResourceProfiler() as rprof, CacheProfiler() as cprof:
-    da.store([Xtilde, Xmat, d], [Xtilde_store, Xmat_store, d_store])
+    da.store([Xmat, d], [Xmat_store, d_store])
+    del Xmat
+    da.store([Xtilde], [Xtilde_store])
 
 visualize([prof, rprof, cprof], show=False)
 h5write.close()
