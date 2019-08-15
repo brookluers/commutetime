@@ -93,7 +93,7 @@ u, d, vT = da.linalg.svd(Xmat)
 tol = 1e-08
 print("Truncating X singular values at {:e}".format(tol))
 Xtilde = getknockoffs_dask(Xmat, u, d, vT, svec, tol=1e-08)
-Xtilde.visualize(filename='xtilde-vis.svg')
+# Xtilde.visualize(filename='xtilde-vis.svg')
 Xtilde_store = h5write.create_carray(h5write.root, 'Xtilde', fatom,
                                      shape = Xtilde.shape,
                                      filters = filters)
