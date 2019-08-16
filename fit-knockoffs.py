@@ -2,6 +2,9 @@ import numpy as np
 from dask import array as da
 import tables
 import json
+from dask.diagnostics import Profiler, ResourceProfiler, CacheProfiler
+from dask.diagnostics import visualize
+import dask.config
 
 def knockoff_threshold(Wstat, q, offset):
     p = len(Wstat)
@@ -38,20 +41,21 @@ for k in xinfo['xcolnames']:
     if xinfo['xcolnames'][k] in keepcols_svd:
         xcolnames_pdim.append(k)
 
-Xaug = da.hstack([X, Xtilde])
-betahat_aug = da.linalg.solve(da.matmul(Xaug.T, Xaug), da.matmul(Xaug.T, Y)).compute()
-Wstat = [abs(betahat_aug[i]) - abs(betahat_aug[i +pdim]) for i in range(pdim)]
-threshold = knockoff_threshold(Wstat, FDR, offset=1)
-sel = [Wstat[j] >= threshold for j in range(pdim)]
+with Profiler() as prof, ResourceProfiler() as rprof, CacheProfiler() as cprof:
+    Xaug = da.hstack([X, Xtilde])
+    betahat_aug = da.linalg.solve(da.matmul(Xaug.T, Xaug), da.matmul(Xaug.T, Y)).compute()
+    Wstat = [abs(betahat_aug[i]) - abs(betahat_aug[i +pdim]) for i in range(pdim)]
+    threshold = knockoff_threshold(Wstat, FDR, offset=1)
+    sel = [Wstat[j] >= threshold for j in range(pdim)]
+    Xdrop = X[:, sel]
+    betahat_final = da.linalg.solve(da.matmul(Xdrop.T, Xdrop), da.matmul(Xdrop.T, Y)).compute()
+    colnames_final = [i for i, j in zip(xcolnames_pdim, sel) if j]
+    colnames_dropped = [i for i, j in zip(xcolnames_pdim, sel) if not j]
+    print("desired FDR: ")
+    print(FDR)
+    print("\nKnockoff drops these columns:\n")
+    print(colnames_dropped)
 
-Xdrop = X[:, sel]
-da.matmul(Xdrop.T, Xdrop)
-betahat_final = da.linalg.solve(da.matmul(Xdrop.T, Xdrop), da.matmul(Xdrop.T, Y)).compute()
-colnames_final = [i for i, j in zip(xcolnames_pdim, sel) if j]
-colnames_dropped = [i for i, j in zip(xcolnames_pdim, sel) if not j]
-print("desired FDR: ")
-print(FDR)
-print("\nKnockoff drops these columns:\n")
-print(colnames_dropped)
+visualize([prof, rprof, cprof], show=False)
 h5read.close()
 h5regression.close()
