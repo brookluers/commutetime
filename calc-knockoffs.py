@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.optimize import minimize
+import scipy.linalg
 from dask import array as da
 from dask.diagnostics import Profiler, ResourceProfiler, CacheProfiler
 from dask.diagnostics import visualize
@@ -7,12 +8,12 @@ import dask.config
 import tables
 import json
 
-def get_ldetfun(Sigma, tol=1e-12):
+def get_ldetfun(Sigma, tol=1e-16):
     def f(svec):
         W = 2 * Sigma - np.diag(svec)
         Wev = np.linalg.eigvalsh(W)
         if any(Wev < tol):
-            return np.Inf
+            return -np.Inf
         else:
             return np.sum(np.log(svec)) + np.sum(np.log(Wev))
     return f
@@ -25,41 +26,16 @@ def get_ldetgrad(Sigma):
         return 1.0 / svec - np.diag(Winv)
     return f
 
-def getknockoffs_dask(Xmat, u, d, vT, svec, tol):
-    # X = UDV^t
-    # svec: vector of knockoff tuning parameters
-    v = vT.T
-    d_inv = 1 / d
-    d_inv[d<tol] = 0
-    pdim = Xmat.shape[1]
-    VDi = v * d_inv # V * D^(-1)
-    SVDi = (VDi.T * svec).T # S * V * D^(-1)
-    Sigma_inv_S = da.matmul(VDi, SVDi.T) # Sigma^(-1) * S
-    CtC = 2 * da.diag(svec) - da.matmul(SVDi, SVDi.T)
-    # Cmat = da.linalg.cholesky(Sigma_sandwich)
-    cU, cD, cVt = da.linalg.svd(CtC)
-    # da.dot(cU * cD, cVt) == CtC
-    cDsqrt = da.sqrt(cD)
-    Cmat = da.dot(cU * cDsqrt, cVt)# p by p, memory-friendly
-    # Sigma_inv_S, Cmat = da.compute(Sigma_inv_S, Cmat)
-    ###
-    zeroes_NxP = da.broadcast_to([0], Xmat.shape, Xmat.chunks)
-    X_zeroes = da.concatenate((Xmat, zeroes_NxP),
-                        axis=1).rechunk({0:200000, 1:-1})
-    Q, R = da.linalg.tsqr(X_zeroes)
-    del v
-    del u
-    del VDi
-    del R
-    del X_zeroes
-    Utilde = Q[:, -pdim:]
-    ## Version using projection matrix based on SVD
-    #Zrand = da.random.random(Xmat.shape,chunks=Xmat.chunks)
-    #Utilde, Rz = da.linalg.qr(Zrand - da.matmul(da.matmul(u, u.T), Zrand))
-    #######
-    #(X - X %*% Sigma_inv_S + Utilde %*% Cmat)
-    Xtilde = Xmat - da.matmul(Xmat, Sigma_inv_S) + da.matmul(Utilde, Cmat)
-    return Xtilde
+def getknockoffs_qr(Xmat, Qx, Rx, G, svec):
+    Utilde_raw = np.random.normal(size=Xmat.shape[0] * Xmat.shape[1]).reshape(Xmat.shape)
+    Utilde_raw = Utilde_raw - np.matmul(Qx, np.matmul(Qx.T, Utilde_raw))
+    Utilde, Ru = scipy.linalg.qr(Utilde_raw, mode='economic')
+    Smat = np.diag(svec)
+    Ginv_S = scipy.linalg.solve(G, Smat)
+    CtC = 2 * Smat - np.matmul(Smat, Ginv_S)
+    Cmat = scipy.linalg.cholesky(CtC)
+    return Xmat - np.matmul(Xmat, Ginv_S) + np.matmul(Utilde, Cmat)
+
 
 xinfo = {}
 with open('xcolnames.json') as jf:
@@ -73,7 +49,6 @@ h5write = tables.open_file('knockoff-data.h5', mode='w')
 fatom = tables.Float64Atom()
 filters = tables.Filters(complevel=1, complib='zlib')
 Xmat = da.from_array(h5read.root.X, chunks = 200000)
-pdim = Xmat.shape[1]
 Y = da.from_array(h5read.root.Y)
 Wgt = da.from_array(h5read.root.wgt)
 xmeans = da.mean(Xmat, axis=0)
@@ -81,8 +56,8 @@ print("Centering X columns")
 Xmat = Xmat - xmeans
 xnorms = da.linalg.norm(Xmat, axis=0)
 xnorms, xmeans = da.compute(xnorms, xmeans)
-keepcols = np.arange(pdim)[np.nonzero(xnorms)]
-dropcols = np.arange(pdim)[xnorms==0]
+keepcols = np.arange(Xmat.shape[1])[np.nonzero(xnorms)]
+dropcols = np.arange(Xmat.shape[1])[xnorms==0]
 print("Dropping column with norm zero:")
 xcolnames = []
 for colname in xinfo['xcolnames']:
@@ -91,27 +66,45 @@ for colname in xinfo['xcolnames']:
         if xinfo['xcolnames'][colname] == dropix:
             print(colname)
 
-xcolnames_keep = np.array(xcolnames)[keepcols]
 Xmat = Xmat[:, keepcols]
-
 xnorms = xnorms[keepcols]
 xmeans = xmeans[keepcols]
+xcolnames_keep = np.array(xcolnames)[keepcols]
 print("Standardizing X columns")
 Xmat = Xmat / xnorms
+tol = 1e-10
+Qx, Rx, Px = scipy.linalg.qr(Xmat, mode='economic', pivoting=True)
+dropcols_qr = Px[np.nonzero(abs(np.diag(Rx))<tol)]
+keepcols_qr = Px[np.nonzero(abs(np.diag(Rx))>=tol)]
+rank = np.sum(abs(np.diag(Rx)) >= tol)
+Rx = Rx[0:rank, 0:rank]
+Qx = Qx[:, 0:rank]
+print("Dropping columns based on pivoted QR:")
+print("\t" + "\n\t".join(xcolnames_keep[dropcols_qr]))
+xnorms = xnorms[keepcols_qr]
+xmeans = xmeans[keepcols_qr]
+Xmat = Xmat[:, keepcols_qr]
+xcolnames_keep = xcolnames_keep[keepcols_qr]
+pdim = Xmat.shape[1]
 print("design matrix has dimensions {:d} by {:d}".format(Xmat.shape[0], pdim))
+# pseudo-inverse:  (X^t X)^(-1) X^t = R^(-1) Q^T
+X_pseudo_inv = scipy.linalg.solve_triangular(Rx, Qx.T)
+# condition number:  || X|| * ||X_pseudo_inv||
+X_cnum = scipy.linalg.norm(Rx, ord=2) * scipy.linalg.norm(X_pseudo_inv, ord=2)
 
-G = da.matmul(Xmat.T, Xmat).compute()
+G = np.matmul(Rx.T, Rx)
 ldetf = get_ldetfun(G)
 ldetgrad = get_ldetgrad(G)
 ldopt = minimize(lambda x: -ldetf(x),
-            x0 = np.repeat(0.0001, pdim),
-            jac = lambda x: -ldetgrad(x),
-            bounds = [(0.0, 1.0) for i in range(pdim)])
+        x0 = np.repeat(0.005, pdim),
+        jac = lambda x: -ldetgrad(x),
+        options={"maxiter": 25000},
+        tol=1e-10,
+        constraints = scipy.optimize.LinearConstraint(np.identity(pdim),lb=0,ub=1.0))
 svec = ldopt.x
-u, d, vT = da.linalg.tsqr(Xmat, compute_svd = True)
-tol = 1e-08
-print("Truncating X singular values at {:e}".format(tol))
-Xtilde = getknockoffs_dask(Xmat, u, d, vT, svec, tol=1e-08)
+
+Xtilde = getknockoffs_qr(Xmat,Qx, Rx, G, svec)
+np.matmul(Xtilde.T, Xmat)
 Xtilde_store = h5write.create_carray(h5write.root, 'Xtilde', fatom,
                                      shape = Xtilde.shape,
                                      filters = filters)
