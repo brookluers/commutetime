@@ -1,8 +1,9 @@
 import numpy as np
 import pandas as pd
 import tables
-from patsy import dmatrix
+from patsy import (dmatrix, ModelDesc, Term, EvalFactor, LookupFactor)
 from patsy.contrasts import Treatment
+from itertools import combinations
 import json
 
 def getfilter(chunk, Yvar, navalue):
@@ -120,20 +121,8 @@ flabels = {
     #'HCOVANY': ['No health insurance','With health insurance'],
     #'HCOVPRIV': ['Without private health insurance',
     #            'With private health insurance'],
-    'BEDCAT': ['N/A/', 'No bedrooms','1','2','3','4','5 or more']
+    'BEDCAT': ['N/A', 'No bedrooms','1','2','3','4','5 or more']
 }
-
-olsformula = "0 + YEAR + C(SEX, levels = flevels['SEX'])\
-+ C(AGECAT, Treatment, levels=flevels['AGECAT'])\
-+ C(RACE, Treatment, levels=flevels['RACE'])\
-+ C(MARST, Treatment, levels=flevels['MARST'])\
-+ C(BEDCAT, Treatment, levels=flevels['BEDCAT'])\
-+ C(NCHILD, Treatment, levels=flevels['NCHILD'])\
-+ C(EDUC, Treatment, levels=flevels['EDUC'])\
-+ C(OCC10GP, Treatment, levels=flevels['OCC10GP'])\
- + C(TRANWORK, Treatment, levels=flevels['TRANWORK'])\
- + C(OWNERSHP, Treatment, levels=flevels['OWNERSHP'])\
-  + INCTOT99"
 
 derivevars = {
     'INCTOT99' : lambda xi: xi['INCTOT'] * xi['CPI99'],
@@ -146,6 +135,18 @@ derivevars = {
                                     right = False, labels = False)
 }
 
+## Build the regression formula
+catvars = list(flevels.keys())
+numvar_evals = ["I(YEAR - 2000)", "INCTOT99"]
+catvar_evals = ["C(" + cv + ", Treatment, levels=flevels['" + cv + "'])" for cv in catvars]
+desc = ModelDesc([],[Term([EvalFactor(v)]) for v in numvar_evals])
+desc.rhs_termlist += [Term([EvalFactor(v)]) for v in catvar_evals]
+# Interactions
+interact_order = 2
+catvar_interact = ['SEX','AGECAT','RACE']
+print("Including all order-" + str(interact_order) + " interactions of the following variables:\n\t" + ", ".join(catvar_interact + numvar_evals))
+interact_evals = numvar_evals + [catvar_evals[i] for i in [catvars.index(v) for v in catvar_interact]]
+desc.rhs_termlist += [Term([EvalFactor(v) for v in list(comb)]) for comb in combinations(interact_evals, interact_order)]
 
 # 'implied decimals'
 #    mentioned in the data dictionary were already
@@ -169,7 +170,7 @@ fatom = tables.Float64Atom()
 csvfname = '~/Downloads/usa_00008.csv'
 temp = pd.read_csv(csvfname, usecols=list(dtypes.keys()),
                     dtype = dtypes, nrows = 200)
-tempdesign = dmatrix(olsformula,
+tempdesign = dmatrix(desc,
                 temp[getfilter(temp, Yvar, Y_navalue)].assign(**derivevars))
 pdim = tempdesign.shape[1]
 with open("xcolnames.json", "w") as xj:
@@ -210,13 +211,13 @@ for chunk in pd.read_csv(csvfname,
                             usecols = list(dtypes.keys()),
                             dtype = dtypes,
                             nrows = 300000,
-                            chunksize = 50000):
+                            chunksize = 75000):
     nrows += len(chunk.index)
     print("{:d} rows so far...".format(nrows))
     curfilter = getfilter(chunk, Yvar, Y_navalue)
     nkept += sum(curfilter)
     chunk = chunk[curfilter].assign(**derivevars)
-    xmat = dmatrix(olsformula, chunk)
+    xmat = dmatrix(desc, chunk)
     Xarray.append(xmat)
     Yarray.append(chunk[Yvar].values)
     Warray.append(chunk[wgtvar].values)
