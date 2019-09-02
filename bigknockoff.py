@@ -51,6 +51,29 @@ def get_svec_ldet(G):
     svec = ldopt.x
     return svec
 
+def PImat_from_pivot(pv):
+    p = pv.shape[0]
+    return np.identity(p)[:, pv]
+
+def tsqr_pivot_seq(A, blocksize = 10000, tol=1e-8):
+    p = A.shape[1]
+    nrow = A.shape[0]
+    if nrow < blocksize:
+        blocksize = nrow // 5
+    Mblock = np.empty((0, p), dtype=np.float64)
+    PImat = np.identity(p)
+    block_ixs = [slice(j, min(j + blocksize, nrow)) for j in np.arange(0, nrow, blocksize)]
+    for cslice in block_ixs:
+        decomp_this = np.concatenate([Mblock,
+            A[cslice, ].dot(PImat)])
+        #Q, R, pv = scipy.linalg.qr(decomp_this, mode='full', pivoting=True)
+        R, pv = scipy.linalg.qr(decomp_this, mode='r', pivoting=True)
+        PImat = PImat.dot(PImat_from_pivot(pv))
+        Mblock = R
+    rank = np.sum(abs(np.diag(R)) >= tol)
+    Rfinal = Mblock[0:rank, 0:rank]
+    Qfinal = np.matmul(A.dot(PImat[:, 0:rank]), scipy.linalg.inv(Rfinal))
+    return Qfinal, Rfinal, PImat[:, 0:rank]
 
 def getknockoffs_qr(Xmat, Qx, Rx, G, svec, tol=1e-10):
     Utilde_raw = np.random.normal(size=Xmat.shape[0] * Xmat.shape[1]).reshape(Xmat.shape)

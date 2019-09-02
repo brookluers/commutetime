@@ -43,13 +43,21 @@ def scale_drop(Xmat, h5write):
     xcolnames_keep = np.array(xcolnames)[keepcols]
     print("Standardizing X columns")
     Xmat = Xmat / xnorms
-    tol = 1e-10
-    Qx, Rx, Px = scipy.linalg.qr(Xmat, mode='economic', pivoting=True)
-    dropcols_qr = Px[np.nonzero(abs(np.diag(Rx))<tol)]
-    keepcols_qr = Px[np.nonzero(abs(np.diag(Rx))>=tol)]
-    rank = np.sum(abs(np.diag(Rx)) >= tol)
-    Rx = Rx[0:rank, 0:rank]
-    Qx = Qx[:, 0:rank]    
+    tol = 1e-8
+    ## IF using scipy QR
+    #Qx, Rx, Px = scipy.linalg.qr(Xmat, mode='economic', pivoting=True)
+    #dropcols_qr = Px[np.nonzero(abs(np.diag(Rx))<tol)]
+    #keepcols_qr = Px[np.nonzero(abs(np.diag(Rx))>=tol)]
+    #rank = np.sum(abs(np.diag(Rx)) >= tol)
+    ## USING BLOCKED QR
+    Qx, Rx, PImat = bk.tsqr_pivot_seq(Xmat)
+    #Rx = Rx[0:rank, 0:rank]
+    #Qx = Qx[:, 0:rank]
+    keepcols_qr = np.argmax(PImat, axis=0)
+    dropmask = np.ones(Xmat.shape[1], dtype=bool)
+    dropmask[keepcols_qr] = False
+    dropcols_qr = np.arange(Xmat.shape[1])[dropmask]
+    rank = keepcols_qr.shape[0]
     print("Dropping columns based on pivoted QR:")
     print("\t" + "\n\t".join(xcolnames_keep[dropcols_qr]))
     xnorms = xnorms[keepcols_qr]
@@ -58,7 +66,6 @@ def scale_drop(Xmat, h5write):
     xcolnames_keep = xcolnames_keep[keepcols_qr]
     #keepcols_store = h5write.create_array(h5write.root, 'keepcols',
     #                                        keepcols)
-
     #cols_orig_store = h5write.create_array(h5write.root, 'xcolnames_all', xcolnames)
     #cols_keep_store = h5write.create_array(h5write.root, 'xcolnames_keep', xcolnames_keep)
     #da.store([xcolnames, xcolnames_keep], [cols_orig_store, cols_keep_store])
@@ -89,7 +96,7 @@ if __name__ == "__main__":
     pdim = Xmat.shape[1]
     print("design matrix has dimensions {:d} by {:d}".format(Xmat.shape[0], pdim))
     # pseudo-inverse:  (X^t X)^(-1) X^t = R^(-1) Q^T
-    #X_pseudo_inv = scipy.linalg.solve_triangular(Rx, Qx.T)
+    # X_pseudo_inv = scipy.linalg.solve_triangular(Rx, Qx.T)
     # condition number:  || X|| * ||X_pseudo_inv||
     #X_cnum = scipy.linalg.norm(Rx, ord=2) * scipy.linalg.norm(X_pseudo_inv, ord=2)
     G = np.matmul(Rx.T, Rx)
