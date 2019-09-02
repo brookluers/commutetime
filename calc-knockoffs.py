@@ -21,21 +21,8 @@ def do_knockoff_seq(Xmat, test_ncols, Qx, Rx, fname):
     pd.DataFrame({'n': n, 'p': pdim, 'ncols': test_ncols, 'cnum_xaug': cnum_xaug_test, 'cnum_x': cnum_xtest}).to_csv(fname, index=False)
     return svec_test[-1], Xtilde_test[-1]
 
-if __name__ == "__main__":
-    xinfo = {}
-    with open("fpaths.json") as fpj:
-        FPATHS = json.load(fpj)
-    with open(FPATHS['xcolnames_json']) as jf:
-        xinfo['xcolnames'] = json.load(jf)
-    with open(FPATHS['xtermslices_json']) as jf:
-        xinfo['xtermcols'] = json.load(jf)
-    h5read = tables.open_file(FPATHS['designmat_h5'], mode='r')
-    h5write = tables.open_file(FPATHS['knockoff_h5'], mode='w')
-    fatom = tables.Float64Atom()
-    filters = tables.Filters(complevel=1, complib='zlib')
-    Xmat = da.from_array(h5read.root.X, chunks = 200000)
-    Y = da.from_array(h5read.root.Y)
-    Wgt = da.from_array(h5read.root.wgt)
+@profile
+def scale_drop(Xmat, h5write):
     xmeans = da.mean(Xmat, axis=0)
     print("Centering X columns")
     Xmat = Xmat - xmeans
@@ -62,40 +49,65 @@ if __name__ == "__main__":
     keepcols_qr = Px[np.nonzero(abs(np.diag(Rx))>=tol)]
     rank = np.sum(abs(np.diag(Rx)) >= tol)
     Rx = Rx[0:rank, 0:rank]
-    Qx = Qx[:, 0:rank]
+    Qx = Qx[:, 0:rank]    
     print("Dropping columns based on pivoted QR:")
     print("\t" + "\n\t".join(xcolnames_keep[dropcols_qr]))
     xnorms = xnorms[keepcols_qr]
     xmeans = xmeans[keepcols_qr]
     Xmat = Xmat[:, keepcols_qr]
     xcolnames_keep = xcolnames_keep[keepcols_qr]
+    #keepcols_store = h5write.create_array(h5write.root, 'keepcols',
+    #                                        keepcols)
+
+    #cols_orig_store = h5write.create_array(h5write.root, 'xcolnames_all', xcolnames)
+    #cols_keep_store = h5write.create_array(h5write.root, 'xcolnames_keep', xcolnames_keep)
+    #da.store([xcolnames, xcolnames_keep], [cols_orig_store, cols_keep_store])
+    return Xmat, Qx, Rx
+
+@profile
+def ko_s(Xmat, Qx, Rx, G):
+    svec = bk.get_svec_ldet(G)
+    Xtilde = bk.getknockoffs_qr(Xmat, Qx, Rx, G, svec)
+    return Xtilde, svec
+
+if __name__ == "__main__":
+    xinfo = {}
+    with open("fpaths.json") as fpj:
+        FPATHS = json.load(fpj)
+    with open(FPATHS['xcolnames_json']) as jf:
+        xinfo['xcolnames'] = json.load(jf)
+    with open(FPATHS['xtermslices_json']) as jf:
+        xinfo['xtermcols'] = json.load(jf)
+    h5read = tables.open_file(FPATHS['designmat_h5'], mode='r')
+    h5write = tables.open_file(FPATHS['knockoff_h5'], mode='w')
+    fatom = tables.Float64Atom()
+    filters = tables.Filters(complevel=1, complib='zlib')
+    Xmat = da.from_array(h5read.root.X)
+    Y = da.from_array(h5read.root.Y)
+    Wgt = da.from_array(h5read.root.wgt)
+    Xmat, Qx, Rx = scale_drop(Xmat, h5write)
     pdim = Xmat.shape[1]
     print("design matrix has dimensions {:d} by {:d}".format(Xmat.shape[0], pdim))
     # pseudo-inverse:  (X^t X)^(-1) X^t = R^(-1) Q^T
-    X_pseudo_inv = scipy.linalg.solve_triangular(Rx, Qx.T)
+    #X_pseudo_inv = scipy.linalg.solve_triangular(Rx, Qx.T)
     # condition number:  || X|| * ||X_pseudo_inv||
-    X_cnum = scipy.linalg.norm(Rx, ord=2) * scipy.linalg.norm(X_pseudo_inv, ord=2)
+    #X_cnum = scipy.linalg.norm(Rx, ord=2) * scipy.linalg.norm(X_pseudo_inv, ord=2)
     G = np.matmul(Rx.T, Rx)
-    test_ncols = np.concatenate([[10, 40], np.arange(76, Xmat.shape[1] - 10, 10), [Xmat.shape[1]]])
+    #test_ncols = np.concatenate([[60], np.arange(90, Xmat.shape[1] - 10, 10), [Xmat.shape[1]]])
     #svec, Xtilde = do_knockoff_seq(Xmat, test_ncols, Qx, Rx, 'Xaug-condition.csv')
-    svec = bk.get_svec_ldet(G)
-    Xtilde = bk.getknockoffs_qr(Xmat, Qx, Rx, G, svec)
+    Xtilde, svec = ko_s(Xmat, Qx, Rx, G)
+    #s_store = h5write.create_array(h5write.root, 'knockoff_svec', svec)
     # ((G - np.diag(svec)) - np.matmul(Xtilde.T, Xmat)).compute()
     # np.matmul(Xtilde.T,Xtilde).compute() - G
-    Xtilde_store = h5write.create_carray(h5write.root, 'Xtilde', fatom,
-                                         shape = Xtilde.shape,
-                                         filters = filters)
-    Xmat_store = h5write.create_carray(h5write.root, 'X', fatom,
-                                        shape = Xmat.shape,
-                                        filters=filters)
-    keepcols_store = h5write.create_array(h5write.root, 'keepcols',
-                                            keepcols)
-    s_store = h5write.create_array(h5write.root, 'knockoff_svec', svec)
-    cols_orig_store = h5write.create_array(h5write.root, 'xcolnames_all', xcolnames)
-    cols_keep_store = h5write.create_array(h5write.root, 'xcolnames_keep', xcolnames_keep)
-    with Profiler() as prof, ResourceProfiler() as rprof, CacheProfiler() as cprof:
-        da.store([Xmat, Xtilde], [Xmat_store, Xtilde_store])
-    da.store([svec, xcolnames, xcolnames_keep], [s_store, cols_orig_store, cols_keep_store])
-    visualize([prof, rprof, cprof], show=False)
+    #Xtilde_store = h5write.create_carray(h5write.root, 'Xtilde', fatom,
+    #                                     shape = Xtilde.shape,
+    #                                     filters = filters)
+    #Xmat_store = h5write.create_carray(h5write.root, 'X', fatom,
+    #                                    shape = Xmat.shape,
+    #                                    filters=filters)
+    #with Profiler() as prof, ResourceProfiler() as rprof, CacheProfiler() as cprof:
+    #    da.store([Xmat, Xtilde], [Xmat_store, Xtilde_store])
+    #da.store([svec], [s_store])
+    #visualize([prof, rprof, cprof], show=False)
     h5write.close()
     h5read.close()
